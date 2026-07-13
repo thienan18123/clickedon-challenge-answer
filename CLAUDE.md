@@ -23,7 +23,7 @@ This is a stripped-down reproduction of ClickedOn's content-generation pipeline,
 
 **`generate()` in `src/lib/pipeline.ts`** is the single entry point. One call runs one content-generation pass through three sequential stages, each with its own failure mode:
 
-1. **Stream + extract** — calls `mockStream()` to get model output, then `extractJson()` (`src/lib/extract-json.ts`) to pull a fenced ` ```json ` block out of it. A truncated stream (missing closing fence) or a transient error from `mockStream` both throw here.
+1. **Stream + extract** — calls `mockStream()` to get model output, then `extractJson()` (`src/lib/extract-json.ts`) to pull a fenced ` ```json ` block out of it. A truncated stream (missing closing fence) or a transient error from `mockStream` both throw here. The fix wraps this in a bounded retry (`MAX_MODEL_RETRIES`), since both failure kinds succeed on a later attempt.
 2. **Revise until review passes** — calls `input.reviewPasses(attempt)` in a loop, incrementing `attempt` each time it returns false. This loop must be bounded (`MAX_REVISIONS`); an unbounded loop or one with no failure path is a bug.
 3. **Hand off** — calls `input.advanceToNextStage()`, which represents handing the finished draft to the next stage of the real pipeline (SEO, social, assembly, ...). This is caller-supplied and may reject.
 
@@ -38,3 +38,7 @@ This is a stripped-down reproduction of ClickedOn's content-generation pipeline,
 - `src/__tests__/pipeline.test.ts` and `.github/workflows/grade.yml` are graded as unmodified — do not edit either. New test files (e.g. `pipeline.bonus.test.ts`) are fine and expected (see README's bonus-test ask).
 - Fixes belong in `src/lib/pipeline.ts` (and, if truly needed, `extract-json.ts`/`anthropic-mock.ts`) — not in the test file, not by special-casing a specific `MockBehavior` value or fixture instead of handling the general failure category it represents.
 - `noUnusedLocals`/`noUnusedParameters` are enabled in `tsconfig.json` — dead code from a half-applied fix will fail typecheck, not just lint.
+- The two bounds in `pipeline.ts` (both currently `3`) are constrained by tests, not arbitrary — and nothing in the code says so:
+  - `MAX_MODEL_RETRIES` has a *lower* bound. `mockStream` throws on its first two calls for `transient-429-twice` and only succeeds on the third, so the stream+extract step needs ≥ 3 attempts (2 failures + 1 success); lowering it silently fails that test.
+  - `MAX_REVISIONS` has an *upper* bound. The gate test asserts `attempts` is `toBeLessThanOrEqual(3)` when review never passes, so it must be ≤ 3.
+- Vitest enforces a 5s `testTimeout` (`vitest.config.ts`) as a safety net — an unbounded loop hangs and then fails the suite rather than hanging CI forever, so a timeout failure often means "a loop lost its bound," not "the machine is slow."
